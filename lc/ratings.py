@@ -167,8 +167,12 @@ def shares(sets: dict[str, dict[str, str | None]], members: list[dict], *, seed:
     """Weak share for every rule x weighting x group (all, model, model+tone)."""
     def key_fns():
         yield "all", lambda m: "all"
+        yield "tone", lambda m: m["cell"].split(".")[1]
         yield "model", lambda m: m["model"]
         yield "model_tone", lambda m: f'{m["model"]}|{m["cell"].split(".")[1]}'
+        if all("source" in m for m in members):
+            yield "source", lambda m: m["source"]
+            yield "source_tone", lambda m: f'{m["source"]}|{m["cell"].split(".")[1]}'
 
     out: dict = {}
     for rule, cases in sets.items():
