@@ -30,6 +30,11 @@ Everything below was started after kickoff. Each item has a commit that shows wh
 - Pipeline, scorer, mock model and analysis code (`lc/`), with tests (`tests/`). First written 2026-11-13.
 - Pilot on 20 items, kept out of the main run (described here only once finished, with no numbers).
 - Hash of the locked hypotheses, sample size and analysis, committed after the pilot and before the main run.
+- Exploratory addenda, each written and voted on before its first call and reported apart from the pre-registered tests:
+  - an added model (DeepSeek V4.1 Flash) after the cloud stop;
+  - a stricter-scorer arm (`gate_strict`, `--strict-only`, analysis in `lc/strict.py`);
+  - pressure that carries evidence: the user pastes a passage from the claim's own store (`paste` cells, `--paste-only`, analysis in `lc/paste.py`).
+- Citation-quality rating analysis with a two-family vote rule (`lc/ratings.py`).
 
 ## Data
 
