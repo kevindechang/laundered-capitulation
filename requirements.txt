@@ -1,0 +1,6 @@
+google-genai==3.3.0
+remotezip
+numpy
+pandas
+scikit-learn
+pytest

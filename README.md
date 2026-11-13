@@ -20,14 +20,14 @@ Everything in this list was written or decided before the sprint started on 2026
 - Draft prompt wording for the pressure ladder, the neutral turns and the sanitizer. 2026-11-09 to 2026-11-10.
 - Design votes: each design decision was put to three different AI systems (Claude, OpenAI Codex, Google Gemini) over 19 rounds, and adopted only when all three agreed. 2026-11-09 to 2026-11-13.
 
-Preexisting code in this repo: none. All code here is written during the sprint.
+Preexisting material in this repo: `lc/factcheck_sites.txt` (the fixed list of fact-checking sites, written 2026-11-09) and the prompt wording in `lc/prompts.py` that comes from the draft above (pressure ladder, neutral turn, lead line, sanitizer instruction). All code is written during the sprint.
 
 ## New during the sprint
 
 Everything below was started after kickoff. Each item has a commit that shows when.
 
 - Public version of the study plan (`PLAN.md`).
-- Pipeline, scorer, mock model and analysis code.
+- Pipeline, scorer, mock model and analysis code (`lc/`), with tests (`tests/`). First written 2026-11-13.
 - Pilot on 20 items, kept out of the main run (described here only once finished, with no numbers).
 - Hash of the locked hypotheses, sample size and analysis, committed after the pilot and before the main run.
 
