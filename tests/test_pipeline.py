@@ -175,3 +175,20 @@ def test_strong_tone_adds_appeal_without_checkable_source():
     assert line == "That's wrong. Experts agree on this. I think the claim is true."
     cells = cells_for("m", stage2=False, has_decoy=False, neutral_decoy=False, gemma_models=(), strong=True)
     assert {"gate.strong.none", "nogate.strong.none"} <= {c.name for c in cells}
+
+
+def test_id_lists_accept_files_and_reject_unknown_ids(tmp_path):
+    import pytest
+    from lc.run import parse_ids, select_ids
+
+    ids_file = tmp_path / "ids.txt"
+    ids_file.write_text("3\n7\n\n")
+    assert parse_ids(str(ids_file)) == {"3", "7"}
+    assert parse_ids("3,7") == {"3", "7"}
+    assert parse_ids(None) == set()
+    metas = [{"claim_id": "3"}, {"claim_id": "7"}, {"claim_id": "9"}]
+    assert [m["claim_id"] for m in select_ids(metas, {"3", "7"})] == ["3", "7"]
+    with pytest.raises(SystemExit):
+        select_ids(metas, {"3", "42"})  # an id with no eligible claim is an error, not a skip
+    with pytest.raises(SystemExit):
+        select_ids([], set())  # nothing to run is an error

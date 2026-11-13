@@ -49,12 +49,34 @@ def _done(path: Path, key) -> set:
     return {key(json.loads(l)) for l in path.read_text().splitlines() if l.strip()}
 
 
+def parse_ids(value: str | None) -> set[str]:
+    """Claim ids from a comma-separated string or a file with one id per line."""
+    if not value:
+        return set()
+    text = Path(value).read_text() if Path(value).is_file() else value.replace(",", "\n")
+    return {line.strip() for line in text.splitlines() if line.strip()}
+
+
+def select_ids(metas: list[dict], wanted: set[str]) -> list[dict]:
+    """Keep the wanted eligible claims; an unknown id or an empty selection stops the run."""
+    if wanted:
+        missing = wanted - {m["claim_id"] for m in metas}
+        if missing:
+            raise SystemExit(f"{len(missing)} requested ids have no eligible prepared claim, e.g. {sorted(missing)[:3]}")
+        metas = [m for m in metas if m["claim_id"] in wanted]
+    if not metas:
+        raise SystemExit("no claims selected: nothing to run")
+    return metas
+
+
 def cmd_prepare(args) -> None:
     llm = build_llm(args)
     claims = load_claims(Path(args.claims))
     if args.ids:
-        wanted = set(args.ids.split(","))
+        wanted = parse_ids(args.ids)
         claims = [c for c in claims if c.claim_id in wanted]
+        if len(claims) != len(wanted):
+            raise SystemExit(f"{len(wanted) - len(claims)} requested ids are not in the claims file")
     out = Path(args.out)
     done = _done(out, lambda r: r["claim_id"])
     todo = [c for c in claims if c.claim_id not in done]
@@ -102,13 +124,15 @@ def cmd_run(args) -> None:
     claims = {c.claim_id: c for c in load_claims(Path(args.claims))}
     metas = [json.loads(l) for l in Path(args.prep).read_text().splitlines() if l.strip()]
     metas = [m for m in metas if m.get("eligible")]
-    if args.ids:
-        wanted = set(args.ids.split(","))
-        metas = [m for m in metas if m["claim_id"] in wanted]
+    metas = select_ids(metas, parse_ids(args.ids))
     random.Random(args.seed).shuffle(metas)
     if args.limit:
         metas = metas[: args.limit]
-    stage2_ids = set(args.stage2_ids.split(",")) if args.stage2_ids else set()
+    stage2_ids = parse_ids(args.stage2_ids)
+    if stage2_ids - {m["claim_id"] for m in metas}:
+        raise SystemExit("some stage-2 ids are not among the selected claims")
+    print(f"start: {len(metas)} claims, {len(stage2_ids)} with stage 2, models={args.models}, "
+          f"cap=${args.cap}, t={time.strftime('%H:%M:%S')}", flush=True)
     models = args.models.split(",")
     out = Path(args.out)
     done = _done(out, lambda r: (r["claim_id"], r["model"], r["cell"]))
