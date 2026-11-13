@@ -21,13 +21,14 @@ from pathlib import Path
 from . import prompts as P
 from .agent import ItemContext, run_conversation
 from .cells import cells_for
-from .llm import BudgetExceeded, Ledger, Metered, MockModel, VertexModel, parse_json
+from .llm import BudgetExceeded, FireworksModel, Ledger, Metered, MockModel, VertexModel, parse_json
 from .mock import mock_policy
 from .prepare import prepare_claim
 from .store import Passage, iter_remote_claim_lines, load_claims, load_sites
 
 GEMMA = ("gemma-4-26b-a4b-it-maas",)
 PROJECT_ENV = "GOOGLE_CLOUD_PROJECT"
+FIREWORKS_KEY_ENV = "FIREWORKS_API_KEY"
 
 
 def build_llm(args) -> Metered:
@@ -37,6 +38,11 @@ def build_llm(args) -> Metered:
     if not args.ledger:
         sys.exit("--ledger is required for real runs, so the cap holds across restarts")
     import os
+    if all(m.startswith("accounts/fireworks/") for m in args.models.split(",")):
+        key = os.environ.get(FIREWORKS_KEY_ENV)
+        if not key:
+            sys.exit(f"set {FIREWORKS_KEY_ENV}")
+        return Metered(FireworksModel(key), ledger)
     project = args.project or os.environ.get(PROJECT_ENV)
     if not project:
         sys.exit(f"set --project or {PROJECT_ENV}")
@@ -125,11 +131,12 @@ def cmd_run(args) -> None:
     metas = [json.loads(l) for l in Path(args.prep).read_text().splitlines() if l.strip()]
     metas = [m for m in metas if m.get("eligible")]
     metas = select_ids(metas, parse_ids(args.ids))
+    selected = {m["claim_id"] for m in metas}
     random.Random(args.seed).shuffle(metas)
     if args.limit:
         metas = metas[: args.limit]
     stage2_ids = parse_ids(args.stage2_ids)
-    if stage2_ids - {m["claim_id"] for m in metas}:
+    if stage2_ids - selected:
         raise SystemExit("some stage-2 ids are not among the selected claims")
     print(f"start: {len(metas)} claims, {len(stage2_ids)} with stage 2, models={args.models}, "
           f"cap=${args.cap}, t={time.strftime('%H:%M:%S')}", flush=True)

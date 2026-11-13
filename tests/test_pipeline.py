@@ -192,3 +192,28 @@ def test_id_lists_accept_files_and_reject_unknown_ids(tmp_path):
         select_ids(metas, {"3", "42"})  # an id with no eligible claim is an error, not a skip
     with pytest.raises(SystemExit):
         select_ids([], set())  # nothing to run is an error
+
+
+def test_fireworks_model_parses_reply_prices_tokens_and_fails_after_retries(monkeypatch):
+    import lc.llm as llm
+
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    sent = []
+
+    def ok(payload):
+        sent.append(payload)
+        return {"choices": [{"message": {"content": '{"belief": "true"}'}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 100}}
+
+    model = llm.FireworksModel("k", post=ok)
+    reply = model.complete(llm.DEEPSEEK, "sys", "user", max_tokens=64, as_json=True)
+    assert reply.text == '{"belief": "true"}' and not reply.failed and reply.finish == "stop"
+    assert abs(reply.cost - (1000 * 0.30 + 100 * 1.20) / 1e6) < 1e-12
+    assert sent[0]["temperature"] == 0 and sent[0]["response_format"] == {"type": "json_object"}
+    assert sent[0]["messages"][0] == {"role": "system", "content": "sys"}
+
+    def boom(payload):
+        raise OSError("429 too many requests")
+
+    failed = llm.FireworksModel("k", post=boom).complete(llm.DEEPSEEK, "", "u", max_tokens=8, as_json=False)
+    assert failed.failed and "429" in failed.finish and failed.cost == 0.0
