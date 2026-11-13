@@ -24,6 +24,7 @@ PRICES = {
     "gemma-4-26b-a4b-it-maas": (0.15, 0.60),
 }
 FLEX_DISCOUNT = 0.5
+FLEX_MODELS = frozenset({"gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"})
 THINKING_LEVEL = {"gemini-3.8-flash": "low"}  # others: "minimal"
 MAX_RETRIES = 4
 
@@ -36,6 +37,7 @@ class Reply:
     tokens_thought: int
     cost: float
     failed: bool = False
+    finish: str = ""
 
 
 class Model(Protocol):
@@ -57,6 +59,13 @@ class Ledger:
         self.failures = 0
         self._path = path
         self._lock = threading.Lock()
+        if path and path.exists():  # the cap holds across restarts and commands
+            for line in path.read_text().splitlines():
+                if line.strip():
+                    row = json.loads(line)
+                    self.spent += row.get("cost", 0.0)
+                    self.calls += 1
+                    self.failures += int(row.get("failed", False))
 
     def check(self) -> None:
         if self.spent >= self.cap:
@@ -72,13 +81,13 @@ class Ledger:
                     fh.write(json.dumps({"t": time.time(), "model": model, "tag": tag,
                                          "in": reply.tokens_in, "out": reply.tokens_out,
                                          "thought": reply.tokens_thought, "cost": reply.cost,
-                                         "failed": reply.failed}) + "\n")
+                                         "failed": reply.failed, "finish": reply.finish}) + "\n")
 
 
 def price(model: str, tokens_in: int, tokens_out: int, *, flex: bool) -> float:
     p_in, p_out = PRICES[model]
     cost = (tokens_in * p_in + tokens_out * p_out) / 1e6
-    return cost * FLEX_DISCOUNT if flex and not model.startswith("gemma") else cost
+    return cost * FLEX_DISCOUNT if flex and model in FLEX_MODELS else cost
 
 
 class Metered:
@@ -101,11 +110,16 @@ class VertexModel:
         from google import genai
         from google.genai import types
 
-        headers = {"X-Vertex-AI-LLM-Shared-Request-Type": "flex"} if flex else {}
         self._types = types
         self._flex = flex
-        self._client = genai.Client(vertexai=True, project=project, location=location,
-                                    http_options=types.HttpOptions(headers=headers))
+        self._standard = genai.Client(vertexai=True, project=project, location=location)
+        self._flex_client = genai.Client(
+            vertexai=True, project=project, location=location,
+            http_options=types.HttpOptions(headers={"X-Vertex-AI-LLM-Shared-Request-Type": "flex"}),
+        ) if flex else None
+
+    def _uses_flex(self, model: str) -> bool:
+        return self._flex and model in FLEX_MODELS
 
     def _config(self, model: str, system: str, max_tokens: int, as_json: bool):
         t = self._types
@@ -124,13 +138,17 @@ class VertexModel:
         last_error = ""
         for attempt in range(MAX_RETRIES):
             try:
-                resp = self._client.models.generate_content(model=model, contents=user, config=config)
+                flex = self._uses_flex(model)
+                client = self._flex_client if flex else self._standard
+                resp = client.models.generate_content(model=model, contents=user, config=config)
                 usage = resp.usage_metadata
                 t_in = usage.prompt_token_count or 0
                 t_out = usage.candidates_token_count or 0
                 t_th = usage.thoughts_token_count or 0
-                return Reply(resp.text or "", t_in, t_out, t_th,
-                             price(model, t_in, t_out + t_th, flex=self._flex))
+                finish = str(resp.candidates[0].finish_reason) if resp.candidates else "NONE"
+                text = resp.text or ""
+                return Reply(text, t_in, t_out, t_th, price(model, t_in, t_out + t_th, flex=flex),
+                             failed=not text.strip(), finish=finish)
             except Exception as exc:  # retried, then recorded as a failed call
                 last_error = f"{type(exc).__name__}: {exc}"
                 time.sleep(2 ** attempt + random.random())

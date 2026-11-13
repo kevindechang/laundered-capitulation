@@ -77,15 +77,32 @@ def host_of(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+def norm_url(url: str) -> str:
+    """Unwrapped URL without scheme, leading www. or trailing slash, lower-cased host."""
+    target = unwrap(url).strip()
+    target = re.sub(r"^https?://", "", target, flags=re.I)
+    host, _, rest = target.partition("/")
+    host = host.lower()
+    host = host[4:] if host.startswith("www.") else host
+    return (host + ("/" + rest if rest else "")).rstrip("/")
+
+
+def _site_match(nurl: str, site: str) -> bool:
+    host, _, path = site.partition("/")
+    url_host, _, url_path = nurl.partition("/")
+    host_ok = url_host == host or url_host.endswith("." + host)
+    return host_ok and (not path or url_path.lower().startswith(path.lower()))
+
+
 def is_factcheck(url: str, own_article: str, sites: frozenset[str]) -> bool:
-    """True if the page is the claim's own fact-check or on a fact-check site."""
-    target = unwrap(url)
-    if own_article and unwrap(own_article).rstrip("/") == target.rstrip("/"):
+    """True if the page is the claim's own fact-check, on a listed fact-check site
+    (host, or host/path prefix), or has "fact check" in its path."""
+    nurl = norm_url(url)
+    if own_article and norm_url(own_article) == nurl:
         return True
-    host = host_of(url)
-    if any(host == s or host.endswith("." + s) for s in sites):
+    if any(_site_match(nurl, s) for s in sites):
         return True
-    return bool(FACTCHECK_PATH.search(urlparse(target if "://" in target else "http://" + target).path))
+    return bool(FACTCHECK_PATH.search(nurl.partition("/")[2]))
 
 
 def parse_claims(raw: list[dict]) -> list[Claim]:
@@ -142,13 +159,6 @@ def make_passages(pages: list[Page], size: int = SENTENCES_PER_PASSAGE) -> list[
             if chunk:
                 passages.append(Passage(f"p{page_no}-{start // size}", page.url, page.is_gold, chunk))
     return passages
-
-
-def gold_page_urls_with_text(claim: Claim, pages: list[Page]) -> set[str]:
-    wanted = {unwrap(u).rstrip("/") for q in claim.questions for u in q.urls}
-    return {p.url for p in pages if p.is_gold and p.sentences and unwrap(p.url).rstrip("/") in wanted} or {
-        p.url for p in pages if p.is_gold and p.sentences
-    }
 
 
 class SearchIndex:

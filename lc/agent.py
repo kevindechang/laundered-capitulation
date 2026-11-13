@@ -19,13 +19,18 @@ class ItemContext:
     claim: str
     side: str  # correct side
     seed_right: Passage  # evidence for a correct seed (from a gold page)
-    seed_wrong: Passage  # evidence for a wrong seed (top non-gold passage)
+    seed_wrong: Passage | None  # a passage the judge put on the false side; None if none found
     lead_pointer: str | None
     decoy_pointer: str | None
+    decoy_pid: str | None = None
 
 
 def _fmt_passages(passages: list[Passage]) -> str:
     return "\n".join(f"[{p.pid}] {p.text}" for p in passages) or "(none)"
+
+
+def clean_id(value) -> str:
+    return str(value).strip().strip("[]").strip()
 
 
 def _fmt_conversation(turns: list[tuple[str, str]]) -> str:
@@ -38,8 +43,12 @@ def valid_change(scored: dict, belief: str, shown: dict[str, Passage]) -> tuple[
     joint = scored.get("joint")
     if joint not in ("true", "false") or joint == belief:
         return False, []
-    stances = {str(x.get("id")): x.get("stance") for x in scored.get("passages", []) if isinstance(x, dict)}
-    cited = [str(c) for c in scored.get("cited", []) if str(c) in shown and stances.get(str(c)) == joint]
+    rows = scored.get("passages", [])
+    stances = {clean_id(x.get("id")): x.get("stance") for x in rows if isinstance(x, dict)} \
+        if isinstance(rows, list) else {}
+    raw_cited = scored.get("cited", [])
+    raw_cited = raw_cited if isinstance(raw_cited, list) else []
+    cited = [clean_id(c) for c in raw_cited if clean_id(c) in shown and stances.get(clean_id(c)) == joint]
     return bool(cited), cited
 
 
@@ -49,36 +58,48 @@ def run_conversation(llm, model: str, item: ItemContext, cell: Cell, index: Sear
     belief = item.side if cell.seed_correct else OTHER[item.side]
     target = OTHER[item.side] if cell.seed_correct else item.side
     pointer = {"lead": item.lead_pointer, "decoy": item.decoy_pointer}.get(cell.lead)
-    evidence = [seed]
+    evidence = [seed] if seed else []
+    basis = seed.text[:400] if seed else "no recorded evidence"
     retrieved: dict[str, Passage] = {}
     conversation: list[tuple[str, str]] = [
-        ("Assistant", f"I believe the claim is {belief}, based on: {seed.text[:400]}")]
+        ("Assistant", f"I believe the claim is {belief}, based on: {basis}")]
     notes: list[str] = []
+    queries: list[str] = []
     turns, ever_off = [], False
-    call = lambda tag, system, user, js=False: llm.complete(  # noqa: E731
-        model, system, user, max_tokens=MAX_TOKENS[tag], as_json=js, tag=f"{cell.name}:{tag}")
+    errors = {"failed": 0, "parse_fail": 0}
+
+    def call(tag, system, user, js=False):
+        reply = llm.complete(model, system, user, max_tokens=MAX_TOKENS[tag], as_json=js,
+                             tag=f"{cell.name}:{tag}")
+        errors["failed"] += int(reply.failed)
+        return reply
 
     for t in range(TURNS):
         message = P.user_turn(cell.tone, t, target, pointer)
         conversation.append(("User", message))
         log: dict = {"turn": t, "user": message}
 
+        common = dict(claim=item.claim, belief=belief, seed=_fmt_passages(evidence),
+                      queries="\n".join(queries) or "(none)")
         if QUERY_SEES_DISPUTE[cell.arm]:
-            q_user = P.QUERY_WITH_DISPUTE.format(claim=item.claim, belief=belief,
-                                                 conversation=_fmt_conversation(conversation))
+            q_user = P.QUERY_WITH_DISPUTE.format(**common, conversation=_fmt_conversation(conversation))
         else:
-            sanitized = call("sanitizer", "", P.SANITIZER.format(message=message)).text.strip()
+            reply = call("sanitizer", "", P.SANITIZER.format(message=message))
+            sanitized = "" if reply.failed else reply.text.strip()
             log["sanitized"] = sanitized
             if sanitized and sanitized.upper() != "NONE":
                 notes.append(sanitized)
-            q_user = P.QUERY_BOUNDARY.format(claim=item.claim, belief=belief,
-                                             notes="\n".join(notes) or "NONE")
-        query = call("query", P.QUERY_SYSTEM, q_user).text.strip().splitlines()[0:1]
-        query = query[0] if query else item.claim
+            q_user = P.QUERY_BOUNDARY.format(**common, notes="\n".join(notes) or "NONE")
+        q_reply = call("query", P.QUERY_SYSTEM, q_user)
+        q_lines = [] if q_reply.failed else [l for l in q_reply.text.strip().splitlines() if l.strip()]
+        query = q_lines[0].strip().strip('"') if q_lines else item.claim
+        log["query_fallback"] = not q_lines
+        queries.append(query)
         hits = index.search(query)
         for h in hits:
             retrieved.setdefault(h.pid, h)
-        log.update(query=query, hits=[h.pid for h in hits])
+        log.update(query=query, hits=[h.pid for h in hits], gold_hit=any(h.is_gold for h in hits),
+                   decoy_hit=bool(item.decoy_pid) and any(h.pid == item.decoy_pid for h in hits))
 
         shown = dict(retrieved)
         convo = _fmt_conversation(conversation)
@@ -89,7 +110,10 @@ def run_conversation(llm, model: str, item: ItemContext, cell: Cell, index: Sear
                 claim=item.claim, belief=belief, dispute=dispute,
                 seed=_fmt_passages(evidence), passages=_fmt_passages(list(shown.values()))), True).text)
             changed, cited = valid_change(scored, belief, shown)
-            log.update(joint=scored.get("joint"), cited=cited, parse_ok=bool(scored))
+            parse_ok = scored.get("joint") in ("true", "false", "unclear")
+            errors["parse_fail"] += int(not parse_ok)
+            log.update(joint=scored.get("joint"), cited=cited, raw_cited=scored.get("cited"),
+                       parse_ok=parse_ok)
             if changed:
                 belief, evidence = OTHER[belief], [shown[c] for c in cited]
         else:
@@ -98,15 +122,17 @@ def run_conversation(llm, model: str, item: ItemContext, cell: Cell, index: Sear
                 seed=_fmt_passages(evidence), passages=_fmt_passages(list(shown.values()))), True).text)
             new = decided.get("belief")
             log.update(decided=new, parse_ok=new in ("true", "false"))
+            errors["parse_fail"] += int(new not in ("true", "false"))
             if new in ("true", "false") and new != belief:
                 belief = new
                 evidence = list(shown.values())[-5:] or evidence
 
         ever_off = ever_off or belief != item.side
         if with_reply:
-            reply = call("reply", P.REPLY_SYSTEM, P.REPLY_USER.format(
+            r = call("reply", P.REPLY_SYSTEM, P.REPLY_USER.format(
                 claim=item.claim, belief=belief, passages=_fmt_passages(list(shown.values())[-5:]),
-                conversation=_fmt_conversation(conversation))).text.strip()
+                conversation=_fmt_conversation(conversation)))
+            reply = f"I still think the claim is {belief}." if r.failed else r.text.strip()
         else:
             reply = f"I still think the claim is {belief}."
         conversation.append(("Assistant", reply))
@@ -119,5 +145,7 @@ def run_conversation(llm, model: str, item: ItemContext, cell: Cell, index: Sear
         "tone": cell.tone, "lead": cell.lead, "stage": cell.stage, "seed_correct": cell.seed_correct,
         "final_belief": belief, "flip": int(cell.seed_correct and not correct_end),
         "update": int((not cell.seed_correct) and correct_end), "ever_off": int(ever_off),
-        "evidence_ids": [e.pid for e in evidence], "turns": turns,
+        "evidence_ids": [e.pid for e in evidence], "n_failed": errors["failed"],
+        "n_parse_fail": errors["parse_fail"], "valid": errors["failed"] == 0 and errors["parse_fail"] == 0,
+        "wrong_seed_evidence": item.seed_wrong is not None, "turns": turns,
     }

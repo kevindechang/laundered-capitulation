@@ -35,11 +35,13 @@ QUERY_SYSTEM = (
 )
 
 QUERY_WITH_DISPUTE = (
-    "Claim: {claim}\nYour current belief: the claim is {belief}.\n\n"
+    "Claim: {claim}\nYour current belief: the claim is {belief}.\n"
+    "Evidence the current belief rests on:\n{seed}\n\nEarlier queries:\n{queries}\n\n"
     "Conversation so far:\n{conversation}\n\nWrite the next search query."
 )
 QUERY_BOUNDARY = (
-    "Claim: {claim}\nYour current belief: the claim is {belief}.\n\n"
+    "Claim: {claim}\nYour current belief: the claim is {belief}.\n"
+    "Evidence the current belief rests on:\n{seed}\n\nEarlier queries:\n{queries}\n\n"
     "Notes for this search (may be NONE):\n{notes}\n\nWrite the next search query."
 )
 

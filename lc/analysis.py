@@ -91,6 +91,16 @@ def contrasts(df: pd.DataFrame, models: tuple[str, ...] = GEMINI, *,
         "positive_control": bootstrap(_diff(flips, "nogate.pressure.none", "nogate.neutral.none"),
                                       "pressure effect without gate", rng),
     }
+    g, q, sc, b = (f"{a}.pressure.none" for a in ("gate", "query_only", "scorer_only", "both"))
+    if all(c in flips for c in (g, q, sc, b)):
+        # 2x2: hide query (rows) x hide scorer (columns), at pressure with no lead.
+        out["hide_query_main"] = bootstrap(((flips[g] + flips[sc]) - (flips[q] + flips[b])).to_numpy(float) / 2,
+                                           "main effect of hiding the query step", rng)
+        out["hide_scorer_main"] = bootstrap(((flips[g] + flips[q]) - (flips[sc] + flips[b])).to_numpy(float) / 2,
+                                            "main effect of hiding the scorer", rng)
+        out["query_x_scorer"] = bootstrap((flips[g] - flips[q] - flips[sc] + flips[b]).to_numpy(float),
+                                          "interaction (gate - query_only - scorer_only + both)", rng)
+    # Selectivity uses no-lead pressure flips (the plan does not name the cells; stated in the report).
     blocked = _diff(flips, "gate.pressure.none", "both.pressure.none")
     lost = _diff(updates, "gate.pressure.lead", "both.pressure.lead")
     if len(blocked) and len(lost):
@@ -104,8 +114,34 @@ def h3_verdict(est: Estimate) -> dict:
             "clears_5": bool(est.one_sided_lo > H3_SECOND)}
 
 
+def valid_only(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Drop rows with a failed call or an unparsed decision, and count them by cell."""
+    if "valid" not in df:
+        return df, {}
+    bad = df[~df["valid"].astype(bool)]
+    return df[df["valid"].astype(bool)], {"invalid_rows": int(len(bad)),
+                                          "by_cell": bad.groupby("cell").size().to_dict()}
+
+
 def report(df: pd.DataFrame) -> dict:
-    result = {"gemini": {k: v.as_dict() for k, v in contrasts(df, GEMINI).items()}}
+    df, invalid = valid_only(df)
+    result = {"invalid": invalid}
+    result["gemini"] = {k: v.as_dict() for k, v in contrasts(df, GEMINI).items()}
+    if "ever_off" in df:
+        ever = df.assign(flip=df["ever_off"].where(df["seed_correct"].astype(bool), 0))
+        result["H1_ever_flipped"] = contrasts(ever, GEMINI)["H1"].as_dict()
+    if "decisive" in df:
+        result["H3_items_excluded_not_decisive"] = int(df.loc[df["decisive"] != True, "claim_id"].nunique())  # noqa: E712
+    if "prior" in df:
+        correct_prior = df["prior"] == df["label"].map({"Supported": "true", "Refuted": "false"})
+        for name, mask in (("prior_correct", correct_prior), ("prior_wrong", ~correct_prior)):
+            result[f"H1_{name}"] = contrasts(df[mask], GEMINI)["H1"].as_dict()
+    if "reannotated" in df:
+        result["H1_without_reannotated"] = contrasts(df[df["reannotated"] != True], GEMINI)["H1"].as_dict()  # noqa: E712
+    if "wrong_seed_evidence" in df:
+        for name, flag in (("seed_evidence", True), ("seed_no_evidence", False)):
+            sub = df[(df["wrong_seed_evidence"] == flag) | df["seed_correct"].astype(bool)]
+            result[f"H3_{name}"] = contrasts(sub, GEMINI)["H3"].as_dict()
     result["gemini_all_items_H3"] = contrasts(df, GEMINI, decisive_only=False)["H3"].as_dict()
     result["H3_verdict"] = h3_verdict(contrasts(df, GEMINI)["H3"])
     gemma = tuple(m for m in df["model"].unique() if m.startswith("gemma"))

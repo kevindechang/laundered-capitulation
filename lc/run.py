@@ -32,6 +32,8 @@ def build_llm(args) -> Metered:
     ledger = Ledger(args.cap, Path(args.ledger) if args.ledger else None)
     if args.mock:
         return Metered(MockModel(mock_policy(args.mock_effect)), ledger)
+    if not args.ledger:
+        sys.exit("--ledger is required for real runs, so the cap holds across restarts")
     import os
     project = args.project or os.environ.get(PROJECT_ENV)
     if not project:
@@ -77,14 +79,17 @@ def _local_lines(folder: str, by_id: dict):
 
 
 def _item_from_meta(meta: dict, claim, passages: dict[str, Passage]) -> ItemContext:
+    wrong = meta.get("seed_wrong")
     return ItemContext(claim.claim_id, claim.text, claim.side, passages[meta["seed_right"]],
-                       passages[meta["seed_wrong"]], meta["lead"], meta["decoy_pointer"])
+                       passages[wrong] if wrong else None, meta["lead"], meta["decoy_pointer"],
+                       meta.get("decoy_pid"))
 
 
 def closed_book(llm, model: str, claim_text: str) -> str | None:
-    reply = llm.complete(model, "", P.CLOSED_BOOK.format(claim=claim_text), max_tokens=256,
+    reply = llm.complete(model, "", P.CLOSED_BOOK.format(claim=claim_text), max_tokens=512,
                          as_json=True, tag="closed_book")
-    return parse_json(reply.text).get("belief")
+    belief = None if reply.failed else parse_json(reply.text).get("belief")
+    return belief if belief in ("true", "false") else "unparsed"
 
 
 def cmd_run(args) -> None:

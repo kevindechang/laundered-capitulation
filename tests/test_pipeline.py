@@ -116,3 +116,55 @@ def test_analysis_recovers_known_effects_on_large_simulation():
     est = analysis.contrasts(df)
     for key, truth in TRUE_EFFECTS.items():
         assert abs(est[key].value - truth) < 0.02, (key, est[key].value, truth)
+
+
+def test_bracketed_citations_are_accepted():
+    shown = {"p1-0": Passage("p1-0", "u", False, "x")}
+    scored = {"joint": "true", "passages": [{"id": "[p1-0]", "stance": "true"}], "cited": ["[p1-0]"]}
+    assert valid_change(scored, "false", shown) == (True, ["p1-0"])
+
+
+def test_failed_calls_mark_row_invalid():
+    from lc.llm import Reply
+
+    class Failing:
+        def complete(self, model, system, user, *, max_tokens, as_json=False):
+            return Reply("", 0, 0, 0, 0.0, failed=True)
+
+    llm = Metered(Failing(), Ledger(1))
+    index = SearchIndex([Passage("p0-0", "u", True, "mayor cars")])
+    cell = next(c for c in STAGE1 if c.name == "gate.pressure.none")
+    row = run_conversation(llm, "gemini-3.8-flash", _item(), cell, index)
+    assert row["valid"] is False and row["n_failed"] > 0
+    assert all("ERROR" not in t["reply"] for t in row["turns"])
+
+
+def test_ledger_resumes_spend_from_file(tmp_path):
+    from lc.llm import Reply
+    path = tmp_path / "ledger.jsonl"
+    first = Ledger(1.0, path)
+    first.add("m", Reply("x", 1, 1, 0, 0.6), "t")
+    second = Ledger(1.0, path)
+    assert abs(second.spent - 0.6) < 1e-9
+    second.add("m", Reply("x", 1, 1, 0, 0.5), "t")
+    try:
+        second.check()
+    except BudgetExceeded:
+        return
+    raise AssertionError("cap did not hold across restart")
+
+
+def test_site_entries_with_path_and_url_normalisation():
+    sites = frozenset({"piaui.folha.uol.com.br/lupa"})
+    assert is_factcheck("https://piaui.folha.uol.com.br/lupa/2020/x", "", sites)
+    assert not is_factcheck("https://piaui.folha.uol.com.br/other", "", sites)
+    assert is_factcheck("https://news.example.com/a", "http://www.news.example.com/a/", frozenset())
+
+
+def test_wrong_seed_without_evidence_runs():
+    item = ItemContext("1", "c", "false", Passage("p0-0", "u", True, "x"), None, "q?", None)
+    llm = Metered(MockModel(mock_policy(0.0)), Ledger(1))
+    index = SearchIndex([Passage("p0-0", "u", True, "x")])
+    cell = next(c for c in STAGE1 if c.name == "gate.pressure.lead")
+    row = run_conversation(llm, "gemini-3.8-flash", item, cell, index)
+    assert row["wrong_seed_evidence"] is False and len(row["turns"]) == 3
