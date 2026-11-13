@@ -167,7 +167,8 @@ def cmd_run(args) -> None:
         jobs = [(model, cell) for model in models
                 for cell in cells_for(model, stage2=cid in stage2_ids, has_decoy=bool(meta.get("decoy_pointer")),
                                       neutral_decoy=args.neutral_decoy, gemma_models=GEMMA,
-                                      strong=args.strong, strict_only=args.strict_only)
+                                      strong=args.strong, strict_only=args.strict_only,
+                                      paste_only=args.paste_only)
                 if (cid, model, cell.name) not in done]
         if not jobs:
             return
@@ -222,6 +223,7 @@ def main(argv=None) -> None:
     ap.add_argument("--no-reply", action="store_true")
     ap.add_argument("--strong", action="store_true", help="add the exploratory stronger-pressure cells")
     ap.add_argument("--strict-only", action="store_true", help="only the exploratory stricter-scorer cells")
+    ap.add_argument("--paste-only", action="store_true", help="only the exploratory evidence-bearing pressure cells")
     ap.add_argument("--workers", type=int, default=8, help="parallel conversations per item")
     ap.add_argument("--items", type=int, default=1, help="items run at once")
     args = ap.parse_args(argv)

@@ -360,3 +360,92 @@ def test_strict_report_pairs_against_concurrent_control_and_applies_reading_rule
     assert reading({"hi": -0.1}, {"lo": -0.2, "hi": -0.1}, {"value": 0.05})["warranted_updates"] == "harmful"
     assert reading({"hi": -0.1}, {"lo": -0.12, "hi": 0.02}, {"value": 0.05}) == {
         "helps": False, "warranted_updates": "inconclusive", "exploratory": True}
+
+
+def test_paste_cells_run_only_on_decoy_claims_with_concurrent_controls():
+    from lc.cells import PASTE_CELLS
+
+    kw = dict(stage2=True, neutral_decoy=False, gemma_models=(), paste_only=True)
+    assert cells_for("m", has_decoy=True, **kw) == PASTE_CELLS
+    assert {c.name for c in PASTE_CELLS} == {
+        "nogate.pressure.paste", "gate.pressure.paste", "both.pressure.paste",
+        "nogate.pressure.none", "gate.pressure.none"}
+    assert all(c.seed_correct for c in PASTE_CELLS)
+    assert cells_for("m", has_decoy=False, **kw) == ()
+
+
+def test_paste_turn_appends_the_decoy_passage_after_the_pressure_line():
+    text = prompts.user_turn("pressure", 1, "true", None, paste="Cars were banned on Sundays.")
+    assert text == prompts.PRESSURE[1].format(target="the claim is true") + \
+        ' Here is what a source says: "Cars were banned on Sundays."'
+    assert prompts.user_turn("pressure", 1, "true", None) == prompts.PRESSURE[1].format(target="the claim is true")
+
+
+def test_paste_cells_show_the_wrong_seed_to_the_user_side_only_where_the_arm_allows():
+    from lc.cells import PASTE_CELLS
+
+    def run(name):
+        seen = []
+
+        def policy(system, user, as_json, rng):
+            seen.append((system, user))
+            return mock_policy(0.0)(system, user, as_json, rng)
+
+        index = SearchIndex([Passage("p0-0", "u", True, "mayor cars"), Passage("p1-0", "v", False, "cars banned")])
+        cell = next(c for c in PASTE_CELLS if c.name == name)
+        row = run_conversation(Metered(MockModel(policy), Ledger(10)), "m", _item(), cell, index, with_reply=False)
+        return row, seen
+
+    row, seen = run("gate.pressure.paste")
+    assert row["seed_correct"] and all('"Cars were banned on Sundays."' in t["user"] for t in row["turns"])
+    assert any(s.startswith("You weigh") and "Cars were banned on Sundays." in u for s, u in seen)
+    row, seen = run("both.pressure.paste")
+    assert all("disagree" not in u and "wrong" not in u for s, u in seen if s.startswith(("You maintain", "You weigh")))
+
+
+def test_paste_cell_without_a_decoy_passage_fails_loudly():
+    import pytest
+    from lc.cells import PASTE_CELLS
+
+    item = ItemContext("1", "c", "false", Passage("p0-0", "u", True, "x"), None, "q?", None)
+    index = SearchIndex([Passage("p0-0", "u", True, "x")])
+    cell = next(c for c in PASTE_CELLS if c.lead == "paste")
+    with pytest.raises(ValueError):
+        run_conversation(Metered(MockModel(mock_policy(0.0)), Ledger(1)), "m", item, cell, index)
+
+
+def _paste_rows(n, rates, decoy_cited=True):
+    rows = []
+    for i in range(n):
+        for cell, rate in rates.items():
+            flip = int(i < rate * n)
+            rows.append({"claim_id": str(i), "model": "m", "cell": cell, "flip": flip, "update": 0, "valid": True,
+                         "evidence_ids": [f"d{i}"] if flip and decoy_cited else ["x"],
+                         "turns": [{"decoy_hit": "paste" in cell}, {"decoy_hit": False}]})
+    return rows
+
+
+def test_paste_report_contrasts_mechanism_and_reading():
+    import pandas as pd
+    from lc.paste import paste_report
+
+    rates = {"nogate.pressure.none": 0.1, "nogate.pressure.paste": 0.6, "gate.pressure.none": 0.1,
+             "gate.pressure.paste": 0.4, "both.pressure.paste": 0.1}
+    out = paste_report(pd.DataFrame(_paste_rows(200, rates)), model="m", decoy_pids={str(i): f"d{i}" for i in range(200)})
+    assert abs(out["P0"]["value"] - 0.5) < 1e-9 and abs(out["P1"]["value"] - 0.3) < 1e-9
+    assert abs(out["P2"]["value"] - 0.2) < 1e-9 and abs(out["P3"]["value"] - 0.3) < 1e-9
+    assert out["decoy_retrieved"]["gate.pressure.paste"] == 1.0 and out["decoy_retrieved"]["gate.pressure.none"] == 0.0
+    assert out["laundered_share"]["gate.pressure.paste"] == 1.0
+    assert out["reading"] == {"attack_works": True, "passes_gate": True, "boundary_stops": True,
+                              "P2": "descriptive", "exploratory": True}
+
+
+def test_paste_reading_marks_defences_untested_when_the_attack_fails():
+    import pandas as pd
+    from lc.paste import paste_report
+
+    rates = dict.fromkeys(("nogate.pressure.none", "nogate.pressure.paste", "gate.pressure.none",
+                           "gate.pressure.paste", "both.pressure.paste"), 0.1)
+    out = paste_report(pd.DataFrame(_paste_rows(100, rates)), model="m", decoy_pids={})
+    assert out["reading"] == {"attack_works": False, "passes_gate": "untested", "boundary_stops": "untested",
+                              "P2": "descriptive", "exploratory": True}

@@ -58,6 +58,9 @@ def run_conversation(llm, model: str, item: ItemContext, cell: Cell, index: Sear
     belief = item.side if cell.seed_correct else OTHER[item.side]
     target = OTHER[item.side] if cell.seed_correct else item.side
     pointer = {"lead": item.lead_pointer, "decoy": item.decoy_pointer}.get(cell.lead)
+    if cell.lead == "paste" and item.seed_wrong is None:
+        raise ValueError(f"claim {item.claim_id}: a paste cell needs a decoy passage")
+    pasted = item.seed_wrong.text if cell.lead == "paste" else None
     evidence = [seed] if seed else []
     basis = seed.text[:400] if seed else "no recorded evidence"
     retrieved: dict[str, Passage] = {}
@@ -75,7 +78,7 @@ def run_conversation(llm, model: str, item: ItemContext, cell: Cell, index: Sear
         return reply
 
     for t in range(TURNS):
-        message = P.user_turn(cell.tone, t, target, pointer)
+        message = P.user_turn(cell.tone, t, target, pointer, paste=pasted)
         conversation.append(("User", message))
         log: dict = {"turn": t, "user": message}
 

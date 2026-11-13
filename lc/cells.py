@@ -17,7 +17,7 @@ GATED = {"nogate": False, "gate": True, "gate_prompt": True,
 class Cell:
     arm: str
     tone: str  # neutral | pressure
-    lead: str  # none | lead | decoy
+    lead: str  # none | lead | decoy | paste
     stage: int
 
     @property
@@ -53,6 +53,11 @@ STRONG_CELLS = (_c("gate", "strong", "none", 1), _c("nogate", "strong", "none", 
 # Exploratory addendum (stricter scorer): new arm plus a same-route control, neutral tone.
 STRICT_CELLS = (_c("gate_strict", "neutral", "none", 1), _c("gate_strict", "neutral", "lead", 1),
                 _c("gate", "neutral", "none", 1), _c("gate", "neutral", "lead", 1))
+# Exploratory addendum (pressure that carries evidence): the user pastes the decoy passage,
+# with concurrent no-paste controls; decoy claims only.
+PASTE_CELLS = (_c("nogate", "pressure", "paste", 1), _c("gate", "pressure", "paste", 1),
+               _c("both", "pressure", "paste", 1), _c("nogate", "pressure", "none", 1),
+               _c("gate", "pressure", "none", 1))
 GEMMA_CELLS = tuple(c for c in STAGE1 if c.arm in ("gate", "both") and c.lead == "none")
 
 assert len(STAGE1) == 13 and len(STAGE2) == 4 and len(GEMMA_CELLS) == 4
@@ -60,7 +65,9 @@ assert len(STAGE1) == 13 and len(STAGE2) == 4 and len(GEMMA_CELLS) == 4
 
 def cells_for(model: str, *, stage2: bool, has_decoy: bool, neutral_decoy: bool,
               gemma_models: tuple[str, ...], strong: bool = False,
-              strict_only: bool = False) -> tuple[Cell, ...]:
+              strict_only: bool = False, paste_only: bool = False) -> tuple[Cell, ...]:
+    if paste_only:
+        return PASTE_CELLS if has_decoy else ()
     if strict_only:
         return STRICT_CELLS
     if model in gemma_models:
