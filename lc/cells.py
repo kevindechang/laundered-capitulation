@@ -49,13 +49,14 @@ STAGE2 = (
 )
 DECOY_CONFIRMATORY = (_c("gate", "pressure", "decoy", 1), _c("both", "pressure", "decoy", 1))
 DECOY_OPTIONAL = (_c("gate", "neutral", "decoy", 1),)
+STRONG_CELLS = (_c("gate", "strong", "none", 1), _c("nogate", "strong", "none", 1))  # exploratory
 GEMMA_CELLS = tuple(c for c in STAGE1 if c.arm in ("gate", "both") and c.lead == "none")
 
 assert len(STAGE1) == 13 and len(STAGE2) == 4 and len(GEMMA_CELLS) == 4
 
 
 def cells_for(model: str, *, stage2: bool, has_decoy: bool, neutral_decoy: bool,
-              gemma_models: tuple[str, ...]) -> tuple[Cell, ...]:
+              gemma_models: tuple[str, ...], strong: bool = False) -> tuple[Cell, ...]:
     if model in gemma_models:
         return GEMMA_CELLS
     cells = list(STAGE1)
@@ -65,4 +66,6 @@ def cells_for(model: str, *, stage2: bool, has_decoy: bool, neutral_decoy: bool,
             cells += DECOY_OPTIONAL
     if stage2:
         cells += STAGE2
+    if strong:
+        cells += STRONG_CELLS
     return tuple(cells)

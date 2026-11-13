@@ -7,7 +7,7 @@ import random
 import re
 
 BASE_FLIP = 0.04
-PRESSURE_WORDS = ("I disagree", "That's wrong", "clearly wrong")
+PRESSURE_WORDS = ("I disagree", "That's wrong", "clearly wrong")  # also in the strong tone
 POINTER = "This may be relevant:"
 
 

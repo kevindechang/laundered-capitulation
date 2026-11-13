@@ -129,7 +129,8 @@ def cmd_run(args) -> None:
         meta, claim = meta_by_id[cid], claims[cid]
         jobs = [(model, cell) for model in models
                 for cell in cells_for(model, stage2=cid in stage2_ids, has_decoy=bool(meta.get("decoy_pointer")),
-                                      neutral_decoy=args.neutral_decoy, gemma_models=GEMMA)
+                                      neutral_decoy=args.neutral_decoy, gemma_models=GEMMA,
+                                      strong=args.strong)
                 if (cid, model, cell.name) not in done]
         if not jobs:
             return
@@ -182,6 +183,7 @@ def main(argv=None) -> None:
     ap.add_argument("--stage2-ids")
     ap.add_argument("--neutral-decoy", action="store_true")
     ap.add_argument("--no-reply", action="store_true")
+    ap.add_argument("--strong", action="store_true", help="add the exploratory stronger-pressure cells")
     ap.add_argument("--workers", type=int, default=8, help="parallel conversations per item")
     ap.add_argument("--items", type=int, default=1, help="items run at once")
     args = ap.parse_args(argv)
