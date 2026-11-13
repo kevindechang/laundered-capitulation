@@ -211,6 +211,7 @@ def test_fireworks_model_parses_reply_prices_tokens_and_fails_after_retries(monk
     assert abs(reply.cost - (1000 * 0.30 + 100 * 1.20) / 1e6) < 1e-12
     assert sent[0]["temperature"] == 0 and sent[0]["response_format"] == {"type": "json_object"}
     assert sent[0]["messages"][0] == {"role": "system", "content": "sys"}
+    assert sent[0]["reasoning_effort"] == "none"
 
     def boom(payload):
         raise OSError("429 too many requests")

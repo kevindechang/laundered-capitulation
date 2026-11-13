@@ -127,37 +127,43 @@ def valid_only(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
                                           "by_cell": bad.groupby("cell").size().to_dict()}
 
 
-def report(df: pd.DataFrame) -> dict:
+def report(df: pd.DataFrame, primary: tuple[str, ...] = GEMINI) -> dict:
+    """Locked contrasts for the primary models (Gemini by default; another model is reported on its own)."""
     df, invalid = valid_only(df)
-    result = {"invalid": invalid}
-    result["gemini"] = {k: v.as_dict() for k, v in contrasts(df, GEMINI).items()}
+    result = {"invalid": invalid, "primary_models": list(primary)}
+    result["gemini"] = {k: v.as_dict() for k, v in contrasts(df, primary).items()}
     if "ever_off" in df:
         ever = df.assign(flip=df["ever_off"].where(df["seed_correct"].astype(bool), 0))
-        result["H1_ever_flipped"] = contrasts(ever, GEMINI)["H1"].as_dict()
+        result["H1_ever_flipped"] = contrasts(ever, primary)["H1"].as_dict()
     if "decisive" in df:
         result["H3_items_excluded_not_decisive"] = int(df.loc[df["decisive"] != True, "claim_id"].nunique())  # noqa: E712
     if "prior" in df:
         correct_prior = df["prior"] == df["label"].map({"Supported": "true", "Refuted": "false"})
         for name, mask in (("prior_correct", correct_prior), ("prior_wrong", ~correct_prior)):
-            result[f"H1_{name}"] = contrasts(df[mask], GEMINI)["H1"].as_dict()
+            result[f"H1_{name}"] = contrasts(df[mask], primary)["H1"].as_dict()
     if "reannotated" in df:
-        result["H1_without_reannotated"] = contrasts(df[df["reannotated"] != True], GEMINI)["H1"].as_dict()  # noqa: E712
+        result["H1_without_reannotated"] = contrasts(df[df["reannotated"] != True], primary)["H1"].as_dict()  # noqa: E712
     if "wrong_seed_evidence" in df:
         for name, flag in (("seed_evidence", True), ("seed_no_evidence", False)):
             sub = df[(df["wrong_seed_evidence"] == flag) | df["seed_correct"].astype(bool)]
-            result[f"H3_{name}"] = contrasts(sub, GEMINI)["H3"].as_dict()
-    result["gemini_all_items_H3"] = contrasts(df, GEMINI, decisive_only=False)["H3"].as_dict()
-    result["H3_verdict"] = h3_verdict(contrasts(df, GEMINI)["H3"])
+            result[f"H3_{name}"] = contrasts(sub, primary)["H3"].as_dict()
+    result["gemini_all_items_H3"] = contrasts(df, primary, decisive_only=False)["H3"].as_dict()
+    result["H3_verdict"] = h3_verdict(contrasts(df, primary)["H3"])
     gemma = tuple(m for m in df["model"].unique() if m.startswith("gemma"))
     if gemma:
         g = contrasts(df, gemma)
         result["gemma"] = {k: g[k].as_dict() for k in ("H1", "manipulation")}
     for label in ("Supported", "Refuted"):
         if "label" in df:
-            result[f"H1_{label}"] = contrasts(df[df["label"] == label], GEMINI)["H1"].as_dict()
+            result[f"H1_{label}"] = contrasts(df[df["label"] == label], primary)["H1"].as_dict()
     return result
 
 
 if __name__ == "__main__":
-    import sys
-    print(json.dumps(report(load(Path(sys.argv[1]))), indent=1))
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("results")
+    ap.add_argument("--models", default=",".join(GEMINI), help="primary models, comma-separated")
+    args = ap.parse_args()
+    print(json.dumps(report(load(Path(args.results)), tuple(args.models.split(","))), indent=1))

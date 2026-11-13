@@ -28,6 +28,7 @@ PRICES = {
 DEEPSEEK = "accounts/fireworks/models/deepseek-v4p1-flash"
 FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
 HTTP_TIMEOUT_S = 120
+FIREWORKS_REASONING = {DEEPSEEK: "none"}  # thinking off; it otherwise eats the token limit
 FLEX_DISCOUNT = 0.5
 FLEX_MODELS = frozenset({"gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"})
 THINKING_LEVEL = {"gemini-3.8-flash": "low"}  # others: "minimal"
@@ -182,6 +183,8 @@ class FireworksModel:
                  as_json: bool = False) -> Reply:
         messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
         payload = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0}
+        if model in FIREWORKS_REASONING:
+            payload["reasoning_effort"] = FIREWORKS_REASONING[model]
         if as_json:
             payload["response_format"] = {"type": "json_object"}
         last_error = ""
