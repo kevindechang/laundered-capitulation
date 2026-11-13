@@ -282,3 +282,81 @@ def test_ratings_cli_reports_rules_and_rejects_incomplete_runs(tmp_path, capsys)
     short = write("short.jsonl", weak[:1])
     with pytest.raises(SystemExit):
         main([members, "--family", f"claude={short}", "--n-boot", "10"])
+
+
+def test_openrouter_model_pins_fireworks_disables_reasoning_and_rejects_other_providers(monkeypatch):
+    import lc.llm as llm
+
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    sent = []
+
+    def ok(payload):
+        sent.append(payload)
+        return {"provider": "Fireworks", "choices": [{"message": {"content": '{"joint": "unclear"}'}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 100}}
+
+    reply = llm.OpenRouterModel("k", post=ok).complete(llm.OPENROUTER_DEEPSEEK, "sys", "u", max_tokens=64, as_json=True)
+    assert not reply.failed and abs(reply.cost - (1000 * 0.30 + 100 * 1.20) / 1e6) < 1e-12
+    p = sent[0]
+    assert p["model"] == "deepseek/deepseek-v4.1-flash" and p["temperature"] == 0
+    assert p["provider"] == {"order": ["fireworks"], "allow_fallbacks": False, "require_parameters": True}
+    assert p["reasoning"] == {"enabled": False} and "reasoning_effort" not in p
+
+    def elsewhere(payload):
+        return {"provider": "DeepInfra", "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}], "usage": {}}
+
+    bad = llm.OpenRouterModel("k", post=elsewhere).complete(llm.OPENROUTER_DEEPSEEK, "", "u", max_tokens=8)
+    assert bad.failed and "DeepInfra" in bad.finish
+
+    def billed(payload):
+        return {"provider": "Fireworks", "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 100, "cost": 0.000123}}
+
+    assert llm.OpenRouterModel("k", post=billed).complete(llm.OPENROUTER_DEEPSEEK, "", "u", max_tokens=8).cost == 0.000123
+
+
+def test_strict_arm_is_the_gate_plus_one_scorer_instruction():
+    from lc.cells import GATED, QUERY_SEES_DISPUTE, SCORER_SEES_DISPUTE, STRICT_CELLS
+
+    cells = cells_for("deepseek/deepseek-v4.1-flash", stage2=True, has_decoy=True, neutral_decoy=False,
+                      gemma_models=(), strict_only=True)
+    assert cells == STRICT_CELLS and {c.name for c in cells} == {
+        "gate_strict.neutral.none", "gate_strict.neutral.lead", "gate.neutral.none", "gate.neutral.lead"}
+    for flags in (GATED, QUERY_SEES_DISPUTE, SCORER_SEES_DISPUTE):
+        assert flags["gate_strict"] == flags["gate"]
+
+    scorer_systems = {}
+    for name in ("gate.neutral.none", "gate_strict.neutral.none"):
+        seen = []
+
+        def policy(system, user, as_json, rng, seen=seen):
+            seen.append(system)
+            return mock_policy(0.0)(system, user, as_json, rng)
+
+        cell = next(c for c in STRICT_CELLS if c.name == name)
+        index = SearchIndex([Passage("p0-0", "u", True, "mayor cars"), Passage("p1-0", "v", False, "cars banned")])
+        run_conversation(Metered(MockModel(policy), Ledger(10)), "m", _item(), cell, index, with_reply=False)
+        scorer_systems[name] = next(s for s in seen if s.startswith("You weigh"))
+    assert scorer_systems["gate_strict.neutral.none"] == scorer_systems["gate.neutral.none"] + prompts.SCORER_STRICT_LINE
+
+
+def test_strict_report_pairs_against_concurrent_control_and_applies_reading_rule():
+    import pandas as pd
+    from lc.strict import reading, strict_report
+
+    rows = []
+    for i in range(200):
+        cid = str(i)
+        rows += [
+            {"claim_id": cid, "model": "m", "cell": "gate.neutral.none", "flip": int(i % 5 == 0), "update": 0, "valid": True, "decisive": True},
+            {"claim_id": cid, "model": "m", "cell": "gate_strict.neutral.none", "flip": 0, "update": 0, "valid": True, "decisive": True},
+            {"claim_id": cid, "model": "m", "cell": "gate.neutral.lead", "flip": 0, "update": int(i % 2 == 0), "valid": True, "decisive": True},
+            {"claim_id": cid, "model": "m", "cell": "gate_strict.neutral.lead", "flip": 0, "update": int(i % 2 == 0), "valid": True, "decisive": True},
+        ]
+    out = strict_report(pd.DataFrame(rows), model="m")
+    assert abs(out["E1"]["value"] + 0.2) < 1e-9 and out["E1"]["hi"] < 0  # strict blocks the 20% control flips
+    assert out["E2"]["value"] == 0 and out["selectivity"]["value"] > 0
+    assert out["reading"] == {"helps": True, "warranted_updates": "non-inferior", "exploratory": True}
+    assert reading({"hi": -0.1}, {"lo": -0.2, "hi": -0.1}, {"value": 0.05})["warranted_updates"] == "harmful"
+    assert reading({"hi": -0.1}, {"lo": -0.12, "hi": 0.02}, {"value": 0.05}) == {
+        "helps": False, "warranted_updates": "inconclusive", "exploratory": True}

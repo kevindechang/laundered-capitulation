@@ -21,7 +21,8 @@ from pathlib import Path
 from . import prompts as P
 from .agent import ItemContext, run_conversation
 from .cells import cells_for
-from .llm import BudgetExceeded, FireworksModel, Ledger, Metered, MockModel, VertexModel, parse_json
+from .llm import (OPENROUTER_KEY_ENV, BudgetExceeded, FireworksModel, Ledger, Metered, MockModel,
+                  OpenRouterModel, VertexModel, parse_json)
 from .mock import mock_policy
 from .prepare import prepare_claim
 from .store import Passage, iter_remote_claim_lines, load_claims, load_sites
@@ -38,6 +39,11 @@ def build_llm(args) -> Metered:
     if not args.ledger:
         sys.exit("--ledger is required for real runs, so the cap holds across restarts")
     import os
+    if all(m.startswith("deepseek/") for m in args.models.split(",")):
+        key = os.environ.get(OPENROUTER_KEY_ENV)
+        if not key:
+            sys.exit(f"set {OPENROUTER_KEY_ENV}")
+        return Metered(OpenRouterModel(key), ledger)
     if all(m.startswith("accounts/fireworks/") for m in args.models.split(",")):
         key = os.environ.get(FIREWORKS_KEY_ENV)
         if not key:
@@ -161,7 +167,7 @@ def cmd_run(args) -> None:
         jobs = [(model, cell) for model in models
                 for cell in cells_for(model, stage2=cid in stage2_ids, has_decoy=bool(meta.get("decoy_pointer")),
                                       neutral_decoy=args.neutral_decoy, gemma_models=GEMMA,
-                                      strong=args.strong)
+                                      strong=args.strong, strict_only=args.strict_only)
                 if (cid, model, cell.name) not in done]
         if not jobs:
             return
@@ -215,6 +221,7 @@ def main(argv=None) -> None:
     ap.add_argument("--neutral-decoy", action="store_true")
     ap.add_argument("--no-reply", action="store_true")
     ap.add_argument("--strong", action="store_true", help="add the exploratory stronger-pressure cells")
+    ap.add_argument("--strict-only", action="store_true", help="only the exploratory stricter-scorer cells")
     ap.add_argument("--workers", type=int, default=8, help="parallel conversations per item")
     ap.add_argument("--items", type=int, default=1, help="items run at once")
     args = ap.parse_args(argv)

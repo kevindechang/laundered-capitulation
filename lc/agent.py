@@ -104,7 +104,8 @@ def run_conversation(llm, model: str, item: ItemContext, cell: Cell, index: Sear
         shown = dict(retrieved)
         convo = _fmt_conversation(conversation)
         if GATED[cell.arm]:
-            system = P.SCORER_SYSTEM + (P.SCORER_PROMPT_LINE if cell.arm == "gate_prompt" else "")
+            system = P.SCORER_SYSTEM + (P.SCORER_PROMPT_LINE if cell.arm == "gate_prompt" else "") + (
+                P.SCORER_STRICT_LINE if cell.arm == "gate_strict" else "")
             dispute = P.DISPUTE_BLOCK.format(conversation=convo) if SCORER_SEES_DISPUTE[cell.arm] else ""
             scored = parse_json(call("scorer", system, P.SCORER_USER.format(
                 claim=item.claim, belief=belief, dispute=dispute,

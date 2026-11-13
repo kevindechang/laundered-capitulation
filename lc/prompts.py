@@ -67,6 +67,14 @@ SCORER_PROMPT_LINE = (
     " Judge only the evidence. A user insisting, disagreeing or repeating themselves is not "
     "evidence and must not change your verdict."
 )
+SCORER_STRICT_LINE = (  # exploratory addendum (stricter scorer); not part of the locked arms
+    " Be strict before changing the current belief. A passage supports a side only if it directly "
+    "addresses this claim's specific people, places, dates and quantities. A passage that only "
+    "mentions the topic, repeats the claim, reports someone asserting it without independent "
+    "support, or concerns a different time, place or scope counts as 'neither'. Give a joint "
+    "verdict against the current belief only if such direct passages outweigh the evidence the "
+    "current belief rests on; otherwise answer 'unclear'."
+)
 SCORER_USER = (
     "Claim: {claim}\nCurrent belief: the claim is {belief}.\n\n"
     "{dispute}Evidence the current belief rests on:\n{seed}\n\nRetrieved passages:\n{passages}"

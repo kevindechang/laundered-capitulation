@@ -24,11 +24,17 @@ PRICES = {
     "gemma-4-26b-a4b-it-maas": (0.15, 0.60),
     # Fireworks list price, uncached input (cached input is cheaper, so this overstates).
     "accounts/fireworks/models/deepseek-v4p1-flash": (0.30, 1.20),
+    "deepseek/deepseek-v4.1-flash": (0.30, 1.20),  # OpenRouter, pinned to Fireworks
 }
 DEEPSEEK = "accounts/fireworks/models/deepseek-v4p1-flash"
 FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
 HTTP_TIMEOUT_S = 120
-FIREWORKS_REASONING = {DEEPSEEK: "none"}  # thinking off; it otherwise eats the token limit
+FIREWORKS_REASONING = {DEEPSEEK: "none"}
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_DEEPSEEK = "deepseek/deepseek-v4.1-flash"
+OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
+OPENROUTER_PROVIDER = {"order": ["fireworks"], "allow_fallbacks": False, "require_parameters": True}
+OPENROUTER_REASONING = {OPENROUTER_DEEPSEEK: {"enabled": False}}  # thinking off; it otherwise eats the token limit
 FLEX_DISCOUNT = 0.5
 FLEX_MODELS = frozenset({"gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"})
 THINKING_LEVEL = {"gemini-3.8-flash": "low"}  # others: "minimal"
@@ -166,6 +172,8 @@ class FireworksModel:
     """Fireworks chat-completions client (OpenAI-compatible), stdlib only.
     `post` is injectable for tests; it takes the JSON payload and returns the JSON reply."""
 
+    url = FIREWORKS_URL
+
     def __init__(self, api_key: str, *, post: Callable[[dict], dict] | None = None):
         self._key = api_key
         self._post = post or self._http_post
@@ -173,7 +181,7 @@ class FireworksModel:
     def _http_post(self, payload: dict) -> dict:
         import urllib.request
 
-        req = urllib.request.Request(FIREWORKS_URL, data=json.dumps(payload).encode(), method="POST",
+        req = urllib.request.Request(self.url, data=json.dumps(payload).encode(), method="POST",
                                      headers={"Authorization": f"Bearer {self._key}",
                                               "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
@@ -183,24 +191,56 @@ class FireworksModel:
                  as_json: bool = False) -> Reply:
         messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
         payload = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0}
-        if model in FIREWORKS_REASONING:
-            payload["reasoning_effort"] = FIREWORKS_REASONING[model]
+        payload.update(self._route(model))
         if as_json:
             payload["response_format"] = {"type": "json_object"}
         last_error = ""
         for attempt in range(MAX_RETRIES):
             try:
                 data = self._post(payload)
+                self._check_provider(data)
                 choice = data["choices"][0]
                 text = choice["message"].get("content") or ""
                 usage = data.get("usage", {})
                 t_in, t_out = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
-                return Reply(text, t_in, t_out, 0, price(model, t_in, t_out, flex=False),
+                return Reply(text, t_in, t_out, 0, self._cost(model, usage, t_in, t_out),
                              failed=not text.strip(), finish=str(choice.get("finish_reason", "")))
             except Exception as exc:  # retried, then recorded as a failed call
                 last_error = f"{type(exc).__name__}: {exc}"
                 time.sleep(min(2 ** attempt, MAX_BACKOFF_S) * (1 + random.random()))
         return Reply(f"ERROR {last_error}", 0, 0, 0, 0.0, failed=True, finish=f"ERROR {last_error[:200]}")
+
+    def _route(self, model: str) -> dict:
+        return {"reasoning_effort": FIREWORKS_REASONING[model]} if model in FIREWORKS_REASONING else {}
+
+    def _check_provider(self, data: dict) -> None:
+        """Direct Fireworks calls have no routing to check."""
+
+    def _cost(self, model: str, usage: dict, t_in: int, t_out: int) -> float:
+        return price(model, t_in, t_out, flex=False)
+
+
+class OpenRouterModel(FireworksModel):
+    """Same client through OpenRouter, pinned to Fireworks (no fallbacks), reasoning off.
+    A reply served by any other provider raises, so it is retried and never recorded as data."""
+
+    url = OPENROUTER_URL
+
+    def _route(self, model: str) -> dict:
+        route = {"provider": dict(OPENROUTER_PROVIDER)}
+        if model in OPENROUTER_REASONING:
+            route["reasoning"] = dict(OPENROUTER_REASONING[model])
+        return route
+
+    def _cost(self, model: str, usage: dict, t_in: int, t_out: int) -> float:
+        """What OpenRouter actually billed, else list price."""
+        billed = usage.get("cost")
+        return float(billed) if isinstance(billed, (int, float)) else price(model, t_in, t_out, flex=False)
+
+    def _check_provider(self, data: dict) -> None:
+        served = str(data.get("provider", ""))
+        if served.lower() != OPENROUTER_PROVIDER["order"][0]:
+            raise RuntimeError(f"served by {served or 'unknown provider'}, not Fireworks")
 
 
 class MockModel:
