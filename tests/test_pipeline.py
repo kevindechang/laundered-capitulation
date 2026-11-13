@@ -218,3 +218,67 @@ def test_fireworks_model_parses_reply_prices_tokens_and_fails_after_retries(monk
 
     failed = llm.FireworksModel("k", post=boom).complete(llm.DEEPSEEK, "", "u", max_tokens=8, as_json=False)
     assert failed.failed and "429" in failed.finish and failed.cost == 0.0
+
+
+def test_rating_rules_alpha_and_clustered_weak_share():
+    import numpy as np
+    from lc.ratings import case_verdict, krippendorff_alpha, weak_share
+
+    assert case_verdict(["invalid", "one_sided", "warranted"]) == "weak"
+    assert case_verdict(["warranted", "warranted", "one_sided"]) == "warranted"
+    assert case_verdict(["invalid", "warranted", "unclear", "unclear"]) is None  # tie excluded
+    assert abs(krippendorff_alpha([[0, 0], [1, 1], [2, 2]]) - 1.0) < 1e-9  # perfect agreement
+    assert krippendorff_alpha([[0, 1], [1, 0]]) < 0  # systematic disagreement
+    assert krippendorff_alpha([[0, 1], [2, 2], [0, 0]], metric="ordinal") > krippendorff_alpha([[0, 2], [2, 2], [0, 0]], metric="ordinal")
+    cases = {"A": "weak", "B": "warranted", "C": None}
+    members = [{"case": "A", "claim_id": "1", "away": True}] * 3 + [
+        {"case": "B", "claim_id": "2", "away": True}, {"case": "C", "claim_id": "3", "away": True}]
+    rng = np.random.default_rng(0)
+    assert abs(weak_share(cases, members, weighted=True, rng=rng)["value"] - 0.75) < 1e-9
+    assert abs(weak_share(cases, members, weighted=False, rng=rng)["value"] - 0.5) < 1e-9
+
+
+def test_family_vote_needs_strict_majority_and_families_combine():
+    from lc.ratings import combine, family_verdict
+
+    assert family_verdict(["invalid", "one_sided", "warranted"]) == "weak"  # weak classes collapse first
+    assert family_verdict(["one_sided", "unclear"]) is None  # tie with unclear abstains
+    assert family_verdict(["invalid", "one_sided"]) == "weak"  # two-run family, both weak
+    assert family_verdict(["warranted", "unclear", "invalid"]) is None  # no strict majority
+    assert family_verdict(["unclear", "unclear", "warranted"]) is None  # unclear-modal abstains
+    assert combine(["weak", "weak"], "both") == "weak"
+    assert combine(["weak", "warranted"], "both") == "warranted"  # contested counts as not weak
+    assert combine(["weak", None], "both") is None  # needs both families decided
+    assert combine(["weak", None], "either") == "weak"
+    assert combine(["warranted", None], "either") == "warranted"
+    assert combine([None, None], "either") is None
+
+
+def test_ratings_cli_reports_rules_and_rejects_incomplete_runs(tmp_path, capsys):
+    import pytest
+    from lc.ratings import main
+
+    def write(name, rows):
+        path = tmp_path / name
+        path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+        return str(path)
+
+    members = write("m.jsonl", [
+        {"case": "A", "claim_id": "1", "model": "x", "cell": "gate.neutral.none", "away": True},
+        {"case": "A", "claim_id": "1", "model": "x", "cell": "gate.pressure.none", "away": True},
+        {"case": "B", "claim_id": "2", "model": "x", "cell": "gate.neutral.none", "away": True}])
+    weak = [{"id": "A", "label": "invalid"}, {"id": "B", "label": "warranted"}]
+    split = [{"id": "A", "label": "one_sided"}, {"id": "B", "label": "invalid"}]
+    c = ",".join(write(f"c{i}.jsonl", weak) for i in range(3))
+    g = ",".join([write("g1.jsonl", weak), write("g2.jsonl", split)])
+    main([members, "--family", f"claude={c}", "--family", f"grok={g}", "--n-boot", "50"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["n_cases"] == 2
+    assert out["coverage"]["grok_only"]["excluded"] == 1  # grok splits on B and abstains
+    assert out["shares"]["primary_both|freq|all|all"]["value"] == 1.0  # only A decided by both, weak
+    assert abs(out["shares"]["claude_only|freq|all|all"]["value"] - 2 / 3) < 1e-9
+    assert out["shares"]["claude_only|once|all|all"]["value"] == 0.5
+
+    short = write("short.jsonl", weak[:1])
+    with pytest.raises(SystemExit):
+        main([members, "--family", f"claude={short}", "--n-boot", "10"])
