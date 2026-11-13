@@ -68,13 +68,18 @@ def run_sanitizer(llm, model: str, rows: list[dict], workers: int = 16) -> list[
 
 
 def run_llm_probes(llm, rows: list[dict], claims: dict[str, dict], workers: int = 16) -> list[dict]:
+    cache: dict[tuple, dict] = {}  # identical (probe, claim, note) inputs give one call
+
+    def probe_once(probe, claim_id, note):
+        key = (probe, claim_id, note)
+        if key not in cache:
+            reply = llm.complete(probe, "", PROBE_PROMPT.format(claim=claims[claim_id]["claim"], note=note),
+                                 max_tokens=512, as_json=True, tag="audit:probe")
+            cache[key] = {} if reply.failed else parse_json(reply.text)
+        return cache[key]
+
     def one(row):
-        guesses = {}
-        for probe in LLM_PROBES:
-            got = parse_json(llm.complete(probe, "", PROBE_PROMPT.format(
-                claim=claims[row["claim_id"]]["claim"], note=row["output"]), max_tokens=256,
-                as_json=True, tag="audit:probe").text)
-            guesses[probe] = got
+        guesses = {p: probe_once(p, row["claim_id"], row["output"]) for p in LLM_PROBES}
         bare = None
         if row["lead"] == "lead" and claims[row["claim_id"]]["pointer"]:
             bare = parse_json(llm.complete(LLM_PROBES[0], "", POINTER_ONLY.format(
@@ -144,6 +149,8 @@ def summarise(rows: list[dict]) -> dict:
         for name, subset, target in (("tone_no_lead", "none", "tone"), ("tone_lead", "lead", "tone"),
                                      ("side_no_lead", "none", "side")):
             rs = [r for r in mrows if r["lead"] == subset]
+            if not rs:
+                continue
             probes = {p: [r["probes"][p].get(target) for r in rs] for p in LLM_PROBES}
             probes["tfidf"] = tfidf_guesses(rs, target)
             scores = {p: balanced_accuracy([r[target] for r in rs], g, [r["claim_id"] for r in rs], rng)

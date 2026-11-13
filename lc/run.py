@@ -13,6 +13,8 @@ import argparse
 import json
 import random
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -113,37 +115,51 @@ def cmd_run(args) -> None:
     sites = load_sites()
     meta_by_id = {m["claim_id"]: m for m in metas}
     order = [m["claim_id"] for m in metas]
-    source = (args.local_store and _local_lines(args.local_store, {i: 1 for i in order})) or \
-        iter_remote_claim_lines(order)
-    for cid, lines in source:
+    write_lock = threading.Lock()
+    stop = threading.Event()
+
+    def fetch(cid: str) -> list[str]:
+        if args.local_store:
+            return next(_local_lines(args.local_store, {cid: 1}))[1]
+        return next(iter_remote_claim_lines([cid]))[1]
+
+    def process(cid: str) -> None:
+        if stop.is_set():
+            return
         meta, claim = meta_by_id[cid], claims[cid]
-        pages = filter_pages(parse_store_lines(lines), claim, sites)
+        jobs = [(model, cell) for model in models
+                for cell in cells_for(model, stage2=cid in stage2_ids, has_decoy=bool(meta.get("decoy_pointer")),
+                                      neutral_decoy=args.neutral_decoy, gemma_models=GEMMA)
+                if (cid, model, cell.name) not in done]
+        if not jobs:
+            return
+        pages = filter_pages(parse_store_lines(fetch(cid)), claim, sites)
         passages = make_passages(pages)
         index = SearchIndex(passages, check_same_thread=False)
         item = _item_from_meta(meta, claim, {p.pid: p for p in passages})
-        jobs = []
-        for model in models:
-            for cell in cells_for(model, stage2=cid in stage2_ids, has_decoy=bool(meta.get("decoy_pointer")),
-                                  neutral_decoy=args.neutral_decoy, gemma_models=GEMMA):
-                if (cid, model, cell.name) not in done:
-                    jobs.append((model, cell))
         try:
-            priors = {m: closed_book(llm, m, claim.text) for m in models} if jobs else {}
+            priors = {m: closed_book(llm, m, claim.text) for m in models}
             with ThreadPoolExecutor(max_workers=args.workers) as pool:
                 rows = list(pool.map(lambda mc: run_conversation(
                     llm, mc[0], item, mc[1], index, with_reply=not args.no_reply), jobs))
         except BudgetExceeded as exc:
-            print(f"stop at claim {cid}: {exc}")
+            stop.set()
+            print(f"stop at claim {cid}: {exc}", flush=True)
+            return
+        finally:
             index.close()
-            break
-        index.close()
-        with out.open("a") as fh:
+        with write_lock, out.open("a") as fh:
             for row in rows:
                 row.update(prior=priors.get(row["model"]), label=claim.label,
                            decisive=meta.get("decisive"), reannotated=claim.reannotated)
                 fh.write(json.dumps(row) + "\n")
         print(f"ran {cid}: {len(rows)} cells, spent=${llm.ledger.spent:.4f}, calls={llm.ledger.calls}, "
-              f"failed={llm.ledger.failures}", flush=True)
+              f"failed={llm.ledger.failures}, t={time.strftime('%H:%M:%S')}", flush=True)
+
+    # Items start in the shuffled order; up to --items run at once.
+    with ThreadPoolExecutor(max_workers=args.items) as pool:
+        for future in [pool.submit(process, cid) for cid in order]:
+            future.result()
 
 
 def main(argv=None) -> None:
@@ -166,7 +182,8 @@ def main(argv=None) -> None:
     ap.add_argument("--stage2-ids")
     ap.add_argument("--neutral-decoy", action="store_true")
     ap.add_argument("--no-reply", action="store_true")
-    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--workers", type=int, default=8, help="parallel conversations per item")
+    ap.add_argument("--items", type=int, default=1, help="items run at once")
     args = ap.parse_args(argv)
     (cmd_prepare if args.command == "prepare" else cmd_run)(args)
 

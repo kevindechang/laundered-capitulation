@@ -7,8 +7,9 @@ Choices where the plan is silent (for the lock check):
 - A correct seed rests on a gold-page passage the judge puts on the correct side.
 - A wrong seed rests on the decoy passage (judged false-side); with none, it
   rests on no recorded evidence, and results are stratified by that.
-- Decoys come from claim-query ranks 6-30, so a plain claim query (top 5) does
-  not retrieve them without the pointer.
+- Decoys: up to 25 candidates, claim-query ranks 6-60 first, ranks 1-5 last
+  (pilot change: ranks 6-30 with 8 checks found decoys for only 4 of 20 items).
+  The rank is recorded and per-turn decoy retrieval is logged.
 """
 from __future__ import annotations
 
@@ -21,9 +22,9 @@ from .store import Claim, Page, Passage, SearchIndex, filter_pages, make_passage
 
 JUDGE = "gemini-3.5-flash-lite"
 PAGE_CHARS = 12000
-DECOY_RANKS = (5, 30)
-DECOY_CHECKS = 8
-SEED_CHECKS = 3
+DECOY_RANKS = (5, 60)
+DECOY_CHECKS = 25
+SEED_CHECKS = 8
 
 
 @dataclass(frozen=True)
@@ -72,14 +73,17 @@ def pick_seed_right(llm, claim: Claim, index: SearchIndex, passages: list[Passag
 
 
 def pick_decoy(llm, claim: Claim, index: SearchIndex) -> tuple[Passage | None, str | None, list[dict]]:
-    """First non-gold passage at claim-query ranks 6-30 the judge puts on the false side."""
+    """First non-gold passage the judge puts on the false side, trying claim-query ranks
+    6-60 first and ranks 1-5 last (those a plain claim query would retrieve anyway)."""
     false_side = "false" if claim.side == "true" else "true"
     lo, hi = DECOY_RANKS
-    candidates = [p for p in index.search(claim.text, k=hi)[lo:] if not p.is_gold]
+    ranked = list(enumerate(index.search(claim.text, k=hi), start=1))
+    ordered = ranked[lo:] + ranked[:lo]
+    candidates = [(r, p) for r, p in ordered if not p.is_gold]
     checks = []
-    for passage in candidates[:DECOY_CHECKS]:
+    for rank, passage in candidates[:DECOY_CHECKS]:
         stance = _stance(llm, claim, passage)
-        checks.append({"pid": passage.pid, "stance": stance})
+        checks.append({"pid": passage.pid, "rank": rank, "stance": stance})
         if stance == false_side:
             reply = _judge(llm, P.JUDGE_POINTER.format(passage=passage.text), "pointer", as_json=False)
             lines = [] if reply.failed else [l for l in reply.text.strip().splitlines() if l.strip()]
