@@ -35,6 +35,7 @@ Everything below was started after kickoff. Each item has a commit that shows wh
   - a stricter-scorer arm (`gate_strict`, `--strict-only`, analysis in `lc/strict.py`);
   - pressure that carries evidence: the user pastes a passage from the claim's own store (`paste` cells, `--paste-only`, analysis in `lc/paste.py`).
 - Citation-quality rating analysis with a two-family vote rule (`lc/ratings.py`).
+- A third rater family as an exploratory robustness check on citation quality, written and voted on before its labels were read; the two-family rule stays primary (`lc/third_family.py`).
 
 ## Data
 

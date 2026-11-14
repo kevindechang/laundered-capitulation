@@ -449,3 +449,47 @@ def test_paste_reading_marks_defences_untested_when_the_attack_fails():
     out = paste_report(pd.DataFrame(_paste_rows(100, rates)), model="m", decoy_pids={})
     assert out["reading"] == {"attack_works": False, "passes_gate": "untested", "boundary_stops": "untested",
                               "P2": "descriptive", "exploratory": True}
+
+
+def test_two_of_three_needs_two_verdicts_and_a_strict_majority():
+    from lc.third_family import two_of_three
+
+    assert two_of_three(["weak", "weak", None]) == "weak"  # eligible even if one family abstains
+    assert two_of_three(["weak", "warranted", "warranted"]) == "warranted"
+    assert two_of_three(["weak", "warranted", None]) is None  # 1-1 split is excluded
+    assert two_of_three(["weak", None, None]) is None  # one verdict is not eligible
+
+
+def test_third_family_cli_reports_outputs_and_keeps_primary_rule(tmp_path, capsys):
+    from lc.third_family import main
+
+    def write(name, rows):
+        path = tmp_path / name
+        path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+        return str(path)
+
+    members = write("m.jsonl", [
+        {"case": "A", "claim_id": "1", "model": "x", "cell": "gate.neutral.none", "away": True},
+        {"case": "B", "claim_id": "2", "model": "x", "cell": "gate.neutral.none", "away": True},
+        {"case": "C", "claim_id": "3", "model": "x", "cell": "gate.neutral.none", "away": True}])
+    claude = [{"id": "A", "label": "invalid"}, {"id": "B", "label": "warranted"}, {"id": "C", "label": "unclear"}]
+    grok = [{"id": "A", "label": "one_sided"}, {"id": "B", "label": "invalid"}, {"id": "C", "label": "invalid"}]
+    glm1 = [{"id": "A", "label": "warranted"}, {"id": "B", "label": "invalid"}, {"id": "C", "label": "warranted"}]
+    glm2 = [{"id": "A", "label": "warranted"}, {"id": "B", "label": "one_sided"}, {"id": "C", "label": "warranted"}]
+    c = ",".join(write(f"c{i}.jsonl", claude) for i in range(3))
+    g = ",".join(write(f"g{i}.jsonl", grok) for i in range(2))
+    z = ",".join([write("z1.jsonl", glm1), write("z2.jsonl", glm2)])
+    main([members, "--family", f"claude={c}", "--family", f"grok={g}", "--family", f"glm={z}",
+          "--primary", "claude,grok", "--third", "glm", "--n-boot", "50"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["decided"] == {"primary": 2, "third_only": 3, "all_three": 2, "two_of_three": 2}
+    assert out["third_abstentions"] == 0
+    assert out["two_of_three_splits"] == 1  # C: Claude abstains, Grok weak, GLM warranted
+    assert out["shares"]["primary"]["freq"]["value"] == 0.5  # A weak, B warranted
+    assert abs(out["shares"]["third_only"]["freq"]["value"] - 1 / 3) < 1e-9  # only B weak
+    assert out["pairwise"]["third_vs_claude"] == {"n": 2, "agree": 0.0}
+
+    import pytest
+    with pytest.raises(SystemExit):
+        main([members, "--family", f"claude={c}", "--family", f"grok={g}", "--family", f"glm={z}",
+              "--primary", "claude,glm", "--third", "glm", "--n-boot", "10"])
