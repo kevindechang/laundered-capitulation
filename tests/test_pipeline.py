@@ -493,3 +493,26 @@ def test_third_family_cli_reports_outputs_and_keeps_primary_rule(tmp_path, capsy
     with pytest.raises(SystemExit):
         main([members, "--family", f"claude={c}", "--family", f"grok={g}", "--family", f"glm={z}",
               "--primary", "claude,glm", "--third", "glm", "--n-boot", "10"])
+
+
+def test_provenance_exclusion_blocks_only_flips_that_cite_nothing_but_the_pasted_passage():
+    import pandas as pd
+    from lc.paste import provenance_exclusion
+
+    rows = []
+    for i in range(10):
+        rows.append({"claim_id": str(i), "model": "m", "cell": "gate.pressure.none", "valid": True, "update": 0,
+                     "flip": int(i < 1), "evidence_ids": ["x"], "turns": []})
+        # gate paste: claims 0-3 flip; 0-1 cite only the decoy, 2 cites decoy plus another passage, 3 cites another
+        cites = {0: [f"d{i}"], 1: [f"d{i}"], 2: [f"d{i}", "x"], 3: ["x"]}.get(i, ["x"])
+        rows.append({"claim_id": str(i), "model": "m", "cell": "gate.pressure.paste", "valid": True, "update": 0,
+                     "flip": int(i < 4), "evidence_ids": cites, "turns": []})
+        rows.append({"claim_id": str(i), "model": "m", "cell": "both.pressure.paste", "valid": True, "update": 0,
+                     "flip": int(i < 2), "evidence_ids": [f"d{i}"] if i == 0 else ["x"], "turns": []})
+    out = provenance_exclusion(pd.DataFrame(rows), model="m", decoy_pids={str(i): f"d{i}" for i in range(10)})
+    assert out["blocked"] == {"gate.pressure.paste": 2, "both.pressure.paste": 1}
+    assert out["flips"] == {"gate.pressure.paste": 4, "both.pressure.paste": 2}
+    assert abs(out["adjusted_rates"]["gate.pressure.paste"] - 0.2) < 1e-9
+    assert abs(out["adjusted_rates"]["both.pressure.paste"] - 0.1) < 1e-9
+    assert abs(out["P1_adjusted"]["value"] - 0.1) < 1e-9 and out["P1_adjusted"]["n_items"] == 10
+    assert out["exploratory"] is True

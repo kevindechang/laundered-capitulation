@@ -67,6 +67,34 @@ def paste_report(df: pd.DataFrame, *, model: str, decoy_pids: dict[str, str]) ->
     return out
 
 
+GATED_PASTE = (f"{GATE}.paste", f"{BOTH}.paste")
+
+
+def provenance_exclusion(df: pd.DataFrame, *, model: str, decoy_pids: dict[str, str]) -> dict:
+    """Offline estimate of a candidate fix (exploratory, round 26): the gate may not count the passage the
+    user pasted (matched by passage id, even when search also retrieved it). In gated cells evidence_ids
+    holds only cited passages the scorer marked as supporting the new side, so a flip is blocked when
+    nothing remains after removing the pasted passage. Upper bound: assumes the scorer would not have
+    cited another passage instead. No-paste cells are unchanged."""
+    df, _ = valid_only(df)
+    df = df[df["model"] == model].copy()
+    is_paste = df["cell"].isin(GATED_PASTE)
+    blocked_row = [bool(p and f) and not [e for e in ev if e != decoy_pids.get(c)]
+                   for p, f, ev, c in zip(is_paste, df["flip"], df["evidence_ids"], df["claim_id"])]
+    df["blocked"] = blocked_row
+    df["flip_adjusted"] = df["flip"].where(~df["blocked"], 0)
+    flips = cell_matrix(df, "flip_adjusted", (model,))
+    rng = np.random.default_rng(SEED)
+    return {
+        "blocked": {c: int(df[df["cell"] == c]["blocked"].sum()) for c in GATED_PASTE},
+        "flips": {c: int(df[df["cell"] == c]["flip"].sum()) for c in GATED_PASTE},
+        "adjusted_rates": {c: float(flips[c].mean()) for c in GATED_PASTE if c in flips},
+        "P1_adjusted": bootstrap(_paired(flips, f"{GATE}.paste", flips, f"{GATE}.none").to_numpy(float),
+                                 "P1 with provenance exclusion: gate paste (adjusted) - gate none", rng).as_dict(),
+        "exploratory": True,
+    }
+
+
 def main(argv: list[str] | None = None) -> None:
     import argparse
 
@@ -77,7 +105,10 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
     metas = [json.loads(line) for line in Path(args.prep).read_text().splitlines() if line.strip()]
     decoys = {m["claim_id"]: m["decoy_pid"] for m in metas if m.get("decoy_pid")}
-    json.dump(paste_report(load(args.results), model=args.model, decoy_pids=decoys), sys.stdout, indent=1)
+    df = load(args.results)
+    out = paste_report(df, model=args.model, decoy_pids=decoys)
+    out["provenance_exclusion"] = provenance_exclusion(df, model=args.model, decoy_pids=decoys)
+    json.dump(out, sys.stdout, indent=1)
     print()
 
 
